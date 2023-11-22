@@ -10,7 +10,7 @@ import { delay, get_coins } from '../utils';
 const dotenv = require('dotenv').config();
 
 import BigNumber from 'bignumber.js';
-import { get_asset_by_id, get_user_deposit_with_type, update_admin_asset, update_user_asset, withdraw_asset } from './DB';
+import { deposit_user_asset, get_asset_by_id, get_user_deposit_with_type, update_admin_asset, update_user_asset, withdraw_asset } from './DB';
 
 let secret_key: any = process.env.PRIVATE_KEY || ''
 const keypair = Ed25519Keypair.fromSecretKey(Uint8Array.from(secret_key.match(/.{1,2}/g).map((byte: string) => parseInt(byte, 16))))
@@ -246,19 +246,19 @@ const get_incentive_pools = async (coinType: string, optionType: NaviOptionType)
     return result
 }
 
-const navi_withdraw = async (deposit_id:number) => {
+const navi_withdraw = async (deposit_id: number) => {
     try {
         const deposit_asset = await get_asset_by_id(deposit_id);
-        if(!deposit_asset) return
-        if(deposit_asset.is_withdraw) return
+        if (!deposit_asset) return
+        if (deposit_asset.is_withdraw) return
         const user_address = deposit_asset.user.address;
         const user_earned = new BigNumber(deposit_asset.earned.toString()).multipliedBy(new BigNumber(0.8)).toFixed(0);
         const toal_user_supply = new BigNumber(deposit_asset.total_supply.toString()).plus(new BigNumber(user_earned)).toFixed(0);
         const total_user_paid = new BigNumber(deposit_asset.total_interest_paid.toString()).plus(new BigNumber(deposit_asset.total_borrowed.toString())).toFixed(0);
-        await navi_withdraw_and_repay_internal(deposit_asset.coin_type,user_address,+toal_user_supply,+total_user_paid);
+        await navi_withdraw_and_repay_internal(deposit_asset.coin_type, user_address, +toal_user_supply, +total_user_paid);
         await withdraw_asset(deposit_id);
     } catch (error) {
-        console.log("🚀 ~ file: index.ts:261 ~ constnavi_withdraw= ~ error:", error)  
+        console.log("🚀 ~ file: index.ts:261 ~ constnavi_withdraw= ~ error:", error)
     }
 }
 
@@ -318,22 +318,23 @@ const caculate_reward = async (coinType: string) => {
 
         // distribute to all users depend on total supply or update total earn each day to DB and update for each user
 
-        const fund_asset = await get_user_deposit_with_type(keypair.toSuiAddress(),coinType);
-        if(!fund_asset[0]) return 0;
-        const current_fund_supply = await get_user_collateral_balance(poolInfo.asset_id,keypair.toSuiAddress());
-        const current_fund_borrowed = await get_user_loan_balance(poolInfo.asset_id,keypair.toSuiAddress());
+        const fund_asset = await get_user_deposit_with_type(keypair.toSuiAddress(), coinType);
+        if (!fund_asset[0]) return 0;
+        const current_fund_supply = await get_user_collateral_balance(poolInfo.asset_id, keypair.toSuiAddress());
+        const current_fund_borrowed = await get_user_loan_balance(poolInfo.asset_id, keypair.toSuiAddress());
         const fund_earned = (current_fund_supply - +fund_asset[0].total_supply.toString()) - (current_fund_borrowed - +fund_asset[0].total_borrowed.toString()) + Number(usdc_swap?.amount);
         const fund_paid = (current_fund_borrowed - +fund_asset[0].total_borrowed.toString());
-        await update_admin_asset(keypair.toSuiAddress(),coinType,current_fund_supply,fund_earned,fund_paid,current_fund_borrowed);
+        await update_admin_asset(keypair.toSuiAddress(), coinType, current_fund_supply, fund_earned, fund_paid, current_fund_borrowed);
         //.........//
-        await update_user_asset(coinType,current_fund_supply,current_fund_borrowed,fund_earned,fund_paid);
+        await update_user_asset(coinType, current_fund_supply, current_fund_borrowed, fund_earned, fund_paid);
 
         // fund_address supply reward
-        navi_deposit(Number(usdc_swap?.amount), poolInfo.coin_type)
+        navi_deposit(Number(usdc_swap?.amount), poolInfo.coin_type ,keypair.toSuiAddress(), undefined)
 
 
     } catch (error) {
         console.log("🚀 ~ file: index.ts:237 ~ constcaculate_reward= ~ error:", error)
+        return 0;
     }
 }
 
@@ -345,7 +346,7 @@ const deParse = (bcs: any, array: number[], type: string) => {
 }
 
 // deposit<CoinType>(clock: &Clock, storage: &mut Storage, pool: &mut Pool, asset: u8, deposit_coin: Coin, amount: u64, ctx: &mut TxContext)
-const navi_deposit = async (amountIn: number, coinType: string) => {
+const navi_deposit = async (amountIn: number, coinType: string,  user_address: string, deposit_id?: number,) => {
     try {
         const poolInfo = getNaviPoolInfoByType(coinType);
         if (!poolInfo) return;
@@ -382,6 +383,9 @@ const navi_deposit = async (amountIn: number, coinType: string) => {
             }
         })
         console.log("🚀 ~ file: index.ts:280 ~ constnavi_deposit= ~ txnSupply1:", txnSupply1.confirmedLocalExecution)
+
+        let total_supply = amountIn;
+        let total_borrowed = 0;
 
         const estimate_result = await caculate_navi_loop_user(amountIn, coinType);
         if (estimate_result.best_loop && estimate_result?.loop_info.length > 0) {
@@ -451,7 +455,12 @@ const navi_deposit = async (amountIn: number, coinType: string) => {
                     }
                 })
                 console.log("🚀 ~ file: index.ts:337 ~ constnavi_deposit= ~ txn3Hash:", txn3Hash.confirmedLocalExecution)
+                total_supply = element.total_suppy;
+                total_borrowed = element.total_borrowed;
             }
+        }
+        if(deposit_id){
+            await deposit_user_asset(deposit_id,user_address,total_supply,total_borrowed,coinType);
         }
     } catch (error) {
         console.log("🚀 ~ file: index.ts:346 ~ constnavi_deposit= ~ error:", error)
@@ -584,12 +593,14 @@ const navi_withdraw_and_repay_internal = async (
         // await delay(500)
 
         const tx4 = new TransactionBlock()
-        tx4.transferObjects([tx4.object(coin_recived)],tx4.pure(user_address))
+        tx4.transferObjects([tx4.object(coin_recived)], tx4.pure(user_address))
 
-        const tx4n = await client.signAndExecuteTransactionBlock({transactionBlock:tx4, signer:keypair, options:{
-            showBalanceChanges:true,
-            showEffects:true
-        }})
+        const tx4n = await client.signAndExecuteTransactionBlock({
+            transactionBlock: tx4, signer: keypair, options: {
+                showBalanceChanges: true,
+                showEffects: true
+            }
+        })
         console.log("🚀 ~ file: index.ts:452 ~ tx4n:", tx4n.confirmedLocalExecution)
     } catch (error) {
         console.log("🚀 ~ file: index.ts:456 ~ error:", error)
@@ -742,4 +753,4 @@ async function inspectResultParseAndPrint(data: DevInspectResults) {
 
 // get_incentive_pools(NAVI_INFO.POOL_INFO.SUI.coin_type, NaviOptionType.OptionTypeSupply)
 
-export { caculate_navi_loop_user, get_user_health_factor, caculate_reward, navi_deposit }
+export { caculate_navi_loop_user, get_user_health_factor, caculate_reward, navi_deposit, navi_withdraw }
