@@ -1,0 +1,43 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  address    String   @unique
+  is_admin   Boolean  @default(false)
+  assets     Asset[]
+  protocol   Protocol @default(NAVI)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+model Asset {
+  id             Int      @id
+  user_id        Int @unique
+  user           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  is_withdraw    Boolean  @default(false)
+  coin_type      String
+  total_supply   BigInt   @default(0)
+  total_borrowed BigInt   @default(0)
+  earned         BigInt   @default(0)
+  total_interest_paid BigInt @default(0)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([user_id])
+}
+
+enum Protocol {
+  NAVI
+  OMIT_BTC
+  CETUS
+}
